@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  ubuntu:
+    image: # image name here
+    container_name: rlp
+    tty: true
+    volumes:
+      - /etc/apt/sources.list.d:/etc/apt/sources.list.d:ro
+      - ~:/root
+      - ./:/workspace/RLP
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '8g'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - CUDA_LAUNCH_BLOCKING=1
+      - OMP_NUM_THREADS=4
+    runtime: nvidia
+    healthcheck:
+      test: ["CMD", "nvidia-smi"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
