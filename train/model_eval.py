@@ -31,7 +31,7 @@ def _build_env(
     return Monitor(DPVTEnv(init_state, **env_config))
 
 
-def envaluate(
+def evaluate_model(
     model_path: str,
     config: Dict[Any, Any],
     init_state: np.ndarray,
@@ -62,6 +62,18 @@ def envaluate(
     plt.show()
 
 
+def envaluate(
+    model_path: str,
+    config: Dict[Any, Any],
+    init_state: np.ndarray,
+    n_eval_episodes: int,
+    enable_visualisation: bool,
+):
+    return evaluate_model(
+        model_path, config, init_state, n_eval_episodes, enable_visualisation
+    )
+
+
 def diagnose(model_path: str, config: Dict[Any, Any], init_state: np.ndarray) -> None:
     model = SAC.load(model_path)
     env = _build_env(config, init_state, enable_visualisation=False)
@@ -80,7 +92,16 @@ def diagnose(model_path: str, config: Dict[Any, Any], init_state: np.ndarray) ->
             [],
             [],
         )
-        progress_r, st_r, v_r, a_r, j_r, d_j_r, terminal_r = [], [], [], [], [], [], []
+        progress_r, progress_scale_r = [], []
+        hard_st_r, soft_st_r, v_r, a_r, j_r, d_j_r, terminal_r = (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         st = raw_env.st
         speed_limits = raw_env.speed_limit
         while not terminated and not truncated:
@@ -94,7 +115,9 @@ def diagnose(model_path: str, config: Dict[Any, Any], init_state: np.ndarray) ->
             j.append(float(action[0] if np.ndim(action) else action))
             r.append(reward)
             progress_r.append(reward_terms.get("progress", 0.0))
-            st_r.append(-reward_terms.get("st_cost", 0.0))
+            progress_scale_r.append(reward_terms.get("progress_scale", 1.0))
+            hard_st_r.append(-reward_terms.get("hard_st_cost", 0.0))
+            soft_st_r.append(-reward_terms.get("soft_st_cost", 0.0))
             v_r.append(-reward_terms.get("speed_cost", 0.0))
             a_r.append(-reward_terms.get("acc_cost", 0.0))
             j_r.append(-reward_terms.get("jerk_cost", 0.0))
@@ -115,7 +138,9 @@ def diagnose(model_path: str, config: Dict[Any, Any], init_state: np.ndarray) ->
         ax[1, 0].plot(j)
         ax[1, 1].plot(r, label="reward")
         ax[1, 1].plot(progress_r, label="progress")
-        ax[1, 1].plot(st_r, label="st")
+        ax[1, 1].plot(progress_scale_r, label="progress_scale")
+        ax[1, 1].plot(hard_st_r, label="hard_st")
+        ax[1, 1].plot(soft_st_r, label="soft_st")
         ax[1, 1].plot(v_r, label="speed")
         ax[1, 1].plot(a_r, label="acc")
         ax[1, 1].plot(j_r, label="jerk")

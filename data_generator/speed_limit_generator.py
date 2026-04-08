@@ -23,7 +23,7 @@ class SpeedLimitGenerator:
         self.local_speed_limit = []
 
     def sample_path_s(self, speed_limit: SpeedLimit, max_path_length: float) -> int:
-        """uniformly ramdomly sample a path s
+        """Uniformly sample a path station index.
 
         Args:
             speed_limit (SpeedLimit):
@@ -52,7 +52,7 @@ class SpeedLimitGenerator:
         return SpeedLimit(speed_limit[: idx + 1])
 
     def sample_single_speed_limit(self, max_speed: float) -> float:
-        """ramdomly sample a speed limit
+        """Randomly sample a speed limit value.
 
         Args:
             max_speed (float):

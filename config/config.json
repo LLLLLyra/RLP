@@ -26,6 +26,7 @@
             "acc_limit_weight": 0.5,
             "hard_margin_weight": 1.5,
             "soft_margin_weight": 0.6,
+            "soft_occupancy_weight": 0.5,
             "yield_weight": 0.5,
             "completion_bonus": 1.0,
             "collision_penalty": 10.0,
@@ -35,7 +36,6 @@
             "overspeed_tolerance": 0.2,
             "severe_overspeed": 1.5,
             "reverse_speed_threshold": -0.2,
-            "hard_penetration_tolerance": 0.1,
             "safe_gap_base": 1.0,
             "safe_gap_time": 0.3,
             "safe_gap_back": 0.5,
@@ -47,6 +47,10 @@
             "jerk_deadband": 0.25,
             "djerk_deadband": 1.0,
             "interaction_speed_discount": 0.5,
+            "interaction_progress_discount": 0.8,
+            "yield_progress_discount": 0.45,
+            "hard_progress_discount": 0.25,
+            "soft_overtake_discount": 0.7,
             "terminal_speed_weight": 0.1,
             "terminal_acc_weight": 0.05
         }

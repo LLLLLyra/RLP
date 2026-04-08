@@ -18,6 +18,12 @@ The codebase has been refactored toward **stable reward shaping**, **single-mach
 
 The environment models longitudinal planning on a fixed path over a planning horizon.
 
+The CLI `--init_state s v a` now acts as the **reset-state anchor**:
+
+- the environment starts around the provided `(s, v, a)`
+- small random perturbations are still applied during reset for exploration
+- this keeps runs reproducible while avoiding a fully deterministic initial-state distribution
+
 At each step, the agent observes:
 
 1. **ST occupancy image**
@@ -79,6 +85,7 @@ reward =
 Encourages the ego vehicle to move forward:
 
 - positive reward proportional to `delta_s`
+- automatically discounted during risky ST interactions to reduce "rush into obstacle" behavior
 
 #### 2.2 Speed reward
 
@@ -110,10 +117,14 @@ Hard and soft ST obstacles are handled differently:
 
 - **hard ST**
   - penalize unsafe approach margin
+  - discount progress reward when the agent keeps pushing toward the occupied region
   - entering the hard obstacle triggers early truncation
 
 - **soft ST**
   - penalize unsafe following / yielding margin
+  - estimate whether overtaking is still feasible within the remaining horizon
+  - if overtaking looks feasible, being closer to the front edge is penalized less
+  - if yielding is preferred, being closer to the rear edge is penalized less
   - being inside a soft region is costly but not necessarily terminal
 
 #### 2.5 Terminal events
@@ -133,6 +144,18 @@ Each environment step exposes:
 
 - `info["reward_terms"]`
 - `info["events"]`
+
+Important reward terms now include:
+
+- `progress`
+- `progress_scale`
+- `hard_st_cost`
+- `soft_st_cost`
+- `speed_cost`
+- `acc_cost`
+- `jerk_cost`
+- `djerk_cost`
+- `terminal_cost`
 
 This is used by the TensorBoard callback for debugging training behavior.
 
@@ -330,6 +353,9 @@ The diagnosis view plots:
 - `j-t`
 - reward decomposition
 - speed-limit tracking
+
+The main evaluation entrypoint is `evaluate_model(...)`.
+The legacy misspelled helper `envaluate(...)` is still kept as a compatibility alias.
 
 ---
 

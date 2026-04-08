@@ -33,7 +33,7 @@ class Vec2d(np.ndarray[float]):
 
     def __eq__(self, other: "Vec2d") -> bool:
         if not isinstance(other, Vec2d):
-            raise TypeError("unconsistent type comparison")
+            raise TypeError("inconsistent type comparison")
         return self[0] == other[0] and self[1] == other[1]
 
 

@@ -218,15 +218,15 @@ class STGenerator:
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    def plot(ax, st_boudnary):
+    def plot(ax, st_boundary):
         x, y = [], []
-        for p in st_boudnary.points:
+        for p in st_boundary.points:
             x.append(p.t())
             y.append(p.s())
 
         x += [x[0]]
         y += [y[0]]
-        col = "r" if not st_boudnary.soft else "g"
+        col = "r" if not st_boundary.soft else "g"
         ax.plot(x, y, col)
 
     gen = STGenerator(5, 15, seed=2)

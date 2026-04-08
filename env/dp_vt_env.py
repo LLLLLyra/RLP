@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
-from copy import deepcopy
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -140,7 +139,10 @@ class DPVTEnv(gym.Env):
         self.exceed_speed = 0.0
 
         self.progress_reward = 0.0
+        self.progress_scale = 1.0
         self.st_cost = 0.0
+        self.hard_st_cost_detail = 0.0
+        self.soft_st_cost_detail = 0.0
         self.speed_cost = 0.0
         self.acc_cost = 0.0
         self.jerk_cost = 0.0
@@ -267,6 +269,7 @@ class DPVTEnv(gym.Env):
             "acc_limit_weight": 0.5,
             "hard_margin_weight": 1.5,
             "soft_margin_weight": 0.6,
+            "soft_occupancy_weight": 0.5,
             "yield_weight": 0.5,
             "completion_bonus": 1.0,
             "collision_penalty": 10.0,
@@ -276,7 +279,6 @@ class DPVTEnv(gym.Env):
             "overspeed_tolerance": 0.2,
             "severe_overspeed": 1.5,
             "reverse_speed_threshold": -0.2,
-            "hard_penetration_tolerance": 0.1,
             "safe_gap_base": 1.0,
             "safe_gap_time": 0.3,
             "safe_gap_back": 0.5,
@@ -288,6 +290,10 @@ class DPVTEnv(gym.Env):
             "jerk_deadband": 0.25,
             "djerk_deadband": 1.0,
             "interaction_speed_discount": 0.5,
+            "interaction_progress_discount": 0.8,
+            "yield_progress_discount": 0.45,
+            "hard_progress_discount": 0.25,
+            "soft_overtake_discount": 0.7,
             "terminal_speed_weight": 0.1,
             "terminal_acc_weight": 0.05,
         }
@@ -306,10 +312,12 @@ class DPVTEnv(gym.Env):
     ) -> float:
         self._reset_reward_tracking()
 
-        progress_reward = self.reward_config["progress_weight"] * np.clip(
-            (s - s_prev) / max(self.max_v * self.dt, 1e-3), -1.0, 1.5
-        )
         st_cost = self._st_cost(s, v, t)
+        progress_reward = (
+            self.reward_config["progress_weight"]
+            * np.clip((s - s_prev) / max(self.max_v * self.dt, 1e-3), -1.0, 1.5)
+            * self.progress_scale
+        )
         speed_cost = self._speed_cost(s, v)
         acc_cost = self._acc_cost(a)
         jerk_cost = self._jerk_cost(j)
@@ -343,6 +351,9 @@ class DPVTEnv(gym.Env):
         self.cross_hard_st = False
         self.cross_soft_st = False
         self.interaction = False
+        self.progress_scale = 1.0
+        self.hard_st_cost_detail = 0.0
+        self.soft_st_cost_detail = 0.0
 
         for st in self.st:
             if st.is_empty() or t < st.min_t or t > st.max_t:
@@ -353,9 +364,13 @@ class DPVTEnv(gym.Env):
                 continue
 
             if st.soft:
-                cost += self._soft_st_cost(st, s, v, t, s_lower, s_upper)
+                soft_cost = self._soft_st_cost(st, s, v, t, s_lower, s_upper)
+                self.soft_st_cost_detail += soft_cost
+                cost += soft_cost
             else:
-                cost += self._hard_st_cost(st, s, v, t, s_lower, s_upper)
+                hard_cost = self._hard_st_cost(st, s, v, t, s_lower, s_upper)
+                self.hard_st_cost_detail += hard_cost
+                cost += hard_cost
 
         return float(cost)
 
@@ -366,18 +381,43 @@ class DPVTEnv(gym.Env):
         safe_back = self.reward_config["safe_gap_back"]
         yield_weight = self.reward_config["yield_weight"]
         margin_weight = self.reward_config["soft_margin_weight"]
+        gap_span = max(s_upper - s_lower, 1e-3)
+        can_overtake = self._can_overtake_soft_st(s, v, t, s_upper)
 
         if s < s_lower:
             gap = s_lower - s
-            return yield_weight * max(0.0, safe_front - gap) ** 2
+            deficit = max(0.0, safe_front - gap)
+            if deficit > 0.0:
+                self.progress_scale = min(
+                    self.progress_scale,
+                    self.reward_config["interaction_progress_discount"]
+                    if can_overtake
+                    else self.reward_config["yield_progress_discount"],
+                )
+            cost_weight = margin_weight if can_overtake else yield_weight
+            return cost_weight * deficit**2
 
         if s > s_upper:
             gap = s - s_upper
             return 0.5 * margin_weight * max(0.0, safe_back - gap) ** 2
 
         self.cross_soft_st = True
-        penetration = min(s - s_lower, s_upper - s)
-        return margin_weight * (1.0 + penetration) ** 2
+        self.progress_scale = min(
+            self.progress_scale,
+            self.reward_config["interaction_progress_discount"]
+            if can_overtake
+            else self.reward_config["yield_progress_discount"],
+        )
+        position_ratio = np.clip((s - s_lower) / gap_span, 0.0, 1.0)
+        center_ratio = 1.0 - abs(2.0 * position_ratio - 1.0)
+        desired_edge_distance = (s_upper - s) if can_overtake else (s - s_lower)
+        occupancy_ratio = np.clip(desired_edge_distance / gap_span, 0.0, 1.0)
+        occupancy_weight = self.reward_config["soft_occupancy_weight"]
+        if can_overtake:
+            occupancy_weight *= self.reward_config["soft_overtake_discount"]
+        occupancy_cost = occupancy_weight * occupancy_ratio**2
+        margin_cost = margin_weight * center_ratio**2
+        return margin_cost + occupancy_cost
 
     def _hard_st_cost(
         self, st: STBoundary, s: float, v: float, t: float, s_lower: float, s_upper: float
@@ -385,18 +425,41 @@ class DPVTEnv(gym.Env):
         safe_front = self.get_yield_distance(st, v, t)
         safe_back = self.reward_config["safe_gap_back"]
         margin_weight = self.reward_config["hard_margin_weight"]
+        gap_span = max(s_upper - s_lower, 1e-3)
 
         if s < s_lower:
             gap = s_lower - s
-            return margin_weight * max(0.0, safe_front - gap) ** 2
+            deficit = max(0.0, safe_front - gap)
+            if deficit > 0.0:
+                self.progress_scale = min(
+                    self.progress_scale, self.reward_config["hard_progress_discount"]
+                )
+            return margin_weight * deficit**2
 
         if s > s_upper:
             gap = s - s_upper
             return 0.5 * margin_weight * max(0.0, safe_back - gap) ** 2
 
-        penetration = min(s - s_lower, s_upper - s)
         self.cross_hard_st = True
-        return margin_weight * (1.0 + penetration) ** 2
+        self.progress_scale = min(
+            self.progress_scale, self.reward_config["hard_progress_discount"]
+        )
+        position_ratio = np.clip((s - s_lower) / gap_span, 0.0, 1.0)
+        center_ratio = 1.0 - abs(2.0 * position_ratio - 1.0)
+        return margin_weight * (1.0 + center_ratio) ** 2
+
+    def _can_overtake_soft_st(
+        self, s: float, v: float, t: float, s_upper: float
+    ) -> bool:
+        remaining_t = max(self.max_t - t, 0.0)
+        if remaining_t <= 0.0:
+            return False
+        reachable_s = (
+            s
+            + max(v, 0.0) * remaining_t
+            + 0.5 * max(self.max_a, 0.0) * remaining_t**2
+        )
+        return reachable_s >= s_upper + self.reward_config["safe_gap_back"]
 
     def get_yield_distance(self, st: STBoundary, v: float, t: float) -> float:
         ds_lower, _ = st.get_boundary_slopes(t)
@@ -493,7 +556,10 @@ class DPVTEnv(gym.Env):
 
     def _reset_reward_tracking(self) -> None:
         self.progress_reward = 0.0
+        self.progress_scale = 1.0
         self.st_cost = 0.0
+        self.hard_st_cost_detail = 0.0
+        self.soft_st_cost_detail = 0.0
         self.speed_cost = 0.0
         self.acc_cost = 0.0
         self.jerk_cost = 0.0
@@ -504,7 +570,10 @@ class DPVTEnv(gym.Env):
     def _reward_info(self) -> Dict[str, float]:
         return {
             "progress": float(self.progress_reward),
+            "progress_scale": float(self.progress_scale),
             "st_cost": float(self.st_cost),
+            "hard_st_cost": float(self.hard_st_cost_detail),
+            "soft_st_cost": float(self.soft_st_cost_detail),
             "speed_cost": float(self.speed_cost),
             "acc_cost": float(self.acc_cost),
             "jerk_cost": float(self.jerk_cost),
