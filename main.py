@@ -19,12 +19,14 @@ def main():
         "-c", "--config_file", nargs="?", default="config/config.json", type=str
     )
     parser.add_argument(
-        "-l", "--train_from_local_model", nargs="?", default=False, type=bool
+        "-l", "--train_from_local_model", action="store_true"
     )
     parser.add_argument("-o", "--output_model", required=True, type=str)
     parser.add_argument("-i", "--input_model", type=str)
     parser.add_argument("-s", "--init_state", nargs=3, type=float, required=True)
     parser.add_argument("-d", "--device_id", default=0, type=int)
+    parser.add_argument("--use_custom_log", action="store_true")
+    parser.add_argument("--show_plot", action="store_true")
 
     args = parser.parse_args()
 
@@ -35,6 +37,8 @@ def main():
     init_state = np.array(list(map(float, init_state)))
 
     device_id = args.device_id
+    use_custom_log = args.use_custom_log
+    show_plot = args.show_plot
 
     to_train = args.train_from_local_model
     if to_train:
@@ -56,9 +60,18 @@ def main():
             init_state,
             device_id,
             train_config["use_multi_env"],
+            use_custom_log,
         )
     else:
-        train(init_state, config, model_out, device_id, **train_config)
+        train(
+            init_state,
+            config,
+            model_out,
+            device_id,
+            use_custom_log=use_custom_log,
+            show_plot=show_plot,
+            **train_config,
+        )
 
 
 if __name__ == "__main__":

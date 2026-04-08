@@ -107,6 +107,13 @@ class DPVTEnv(gym.Env):
                 ),
             }
         )
+        self._obs_array_low = (self.observation_space["array"].low - 1.0).astype(
+            np.float32
+        )
+        self._obs_array_scale = (
+            self.observation_space["array"].high + 2.0 - self._obs_array_low
+        ).astype(np.float32)
+        self._normalised_array = np.zeros(self.array_dim, dtype=np.float32)
 
         self.reward_config = self._default_reward_config()
         if reward_config is not None:
@@ -261,6 +268,7 @@ class DPVTEnv(gym.Env):
             "acc_weight": 0.08,
             "jerk_weight": 0.03,
             "djerk_weight": 0.01,
+            "acc_limit_weight": 0.5,
             "hard_margin_weight": 1.5,
             "soft_margin_weight": 0.6,
             "yield_weight": 0.5,
@@ -279,6 +287,11 @@ class DPVTEnv(gym.Env):
             "acc_comfort": 2.0,
             "jerk_comfort": 4.0,
             "djerk_comfort": 20.0,
+            "speed_tracking_tolerance": 0.15,
+            "acc_deadband": 0.15,
+            "jerk_deadband": 0.25,
+            "djerk_deadband": 1.0,
+            "interaction_speed_discount": 0.5,
             "terminal_speed_weight": 0.1,
             "terminal_acc_weight": 0.05,
         }
@@ -407,26 +420,41 @@ class DPVTEnv(gym.Env):
         self.severe_overspeed = (
             v - current_speed_limit > self.reward_config["severe_overspeed"]
         )
+        speed_tracking_error = self._apply_deadband(
+            tracking_error, self.reward_config["speed_tracking_tolerance"]
+        )
         tracking_cost = self.reward_config["speed_tracking_weight"] * (
-            tracking_error / max(self.max_v, 1e-3)
+            speed_tracking_error / max(self.max_v, 1e-3)
         ) ** 2
+        if self.interaction:
+            tracking_cost *= self.reward_config["interaction_speed_discount"]
         overspeed_cost = self.reward_config["overspeed_weight"] * overspeed_margin**2
         return float(tracking_cost + overspeed_cost)
 
     def _acc_cost(self, a: float) -> float:
         comfort_scale = max(self.reward_config["acc_comfort"], 1e-3)
-        return float(self.reward_config["acc_weight"] * (a / comfort_scale) ** 2)
+        comfort_a = self._apply_deadband(a, self.reward_config["acc_deadband"])
+        comfort_cost = self.reward_config["acc_weight"] * (comfort_a / comfort_scale) ** 2
+        acc_limit_excess = max(0.0, a - self.max_a) + max(0.0, self.min_a - a)
+        limit_cost = self.reward_config["acc_limit_weight"] * acc_limit_excess**2
+        return float(comfort_cost + limit_cost)
 
     def _jerk_cost(self, j: float) -> float:
         comfort_scale = max(self.reward_config["jerk_comfort"], 1e-3)
-        return float(self.reward_config["jerk_weight"] * (j / comfort_scale) ** 2)
+        comfort_j = self._apply_deadband(j, self.reward_config["jerk_deadband"])
+        return float(self.reward_config["jerk_weight"] * (comfort_j / comfort_scale) ** 2)
 
     def _d_jerk_cost(self) -> float:
         if len(self.j) <= 1:
             return 0.0
         d_jerk = (self.j[-1] - self.j[-2]) / max(self.dt, 1e-3)
         comfort_scale = max(self.reward_config["djerk_comfort"], 1e-3)
-        return float(self.reward_config["djerk_weight"] * (d_jerk / comfort_scale) ** 2)
+        comfort_djerk = self._apply_deadband(
+            d_jerk, self.reward_config["djerk_deadband"]
+        )
+        return float(
+            self.reward_config["djerk_weight"] * (comfort_djerk / comfort_scale) ** 2
+        )
 
     def _terminal_penalty(self, s: float, v: float) -> float:
         self.reverse_speed = v < self.reward_config["reverse_speed_threshold"]
@@ -503,16 +531,17 @@ class DPVTEnv(gym.Env):
         return self.state
 
     def _get_normalise_state(self) -> Dict[str, np.ndarray]:
-        state = deepcopy(self._get_obs())
-        array = state["array"].astype(np.float32)
-        array = self.min_max_wrapper(
-            array,
-            self.observation_space["array"].low - 1.0,
-            self.observation_space["array"].high + 2.0,
-        ).astype(np.float32)
-        state["array"] = np.clip(array, 0.0, 1.0)
-        state["st_image"] = state["st_image"].astype(np.float32)
-        return state
+        np.subtract(self.state["array"], self._obs_array_low, out=self._normalised_array)
+        np.divide(
+            self._normalised_array,
+            self._obs_array_scale,
+            out=self._normalised_array,
+            where=self._obs_array_scale != 0.0,
+        )
+        return {
+            "st_image": self.state["st_image"],
+            "array": np.clip(self._normalised_array, 0.0, 1.0).copy(),
+        }
 
     def _generate_static_environment(self) -> Dict[str, np.ndarray]:
         st_image = self._generate_st()
@@ -564,6 +593,12 @@ class DPVTEnv(gym.Env):
         high: float | np.ndarray,
     ) -> np.ndarray:
         return state * (high - low) + low
+
+    def _apply_deadband(self, value: float, deadband: float) -> float:
+        abs_value = abs(value)
+        if abs_value <= deadband:
+            return 0.0
+        return np.sign(value) * (abs_value - deadband)
 
     def render(self, s: np.ndarray, a: float, r: float) -> None:
         if self.render_mode:

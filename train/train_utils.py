@@ -49,8 +49,9 @@ def register_schedule(schedule: str, **kwargs) -> Callable[[float], float]:
 
 
 class SACTensorboardCallBack(BaseCallback):
-    def __init__(self, verbose=0):
+    def __init__(self, log_freq: int = 5000, verbose: int = 0):
         super().__init__(verbose)
+        self.log_freq = max(int(log_freq), 1)
         self.reward_buffers: Dict[str, List[float]] = {}
         self.event_buffers: Dict[str, List[float]] = {}
 
@@ -66,27 +67,31 @@ class SACTensorboardCallBack(BaseCallback):
         return True
 
     def _on_rollout_end(self) -> None:
-        if self.model.replay_buffer.size() < self.model.batch_size:
-            return
-        replay_data = self.model.replay_buffer.sample(
-            self.model.batch_size, env=self.model._vec_normalize_env
-        )
-        obs = replay_data.next_observations
-        with th.no_grad():
-            q_value_1 = th.cat(
-                self.model.critic_target(obs, self.model.actor(obs)), dim=1
+        if (
+            self.model.replay_buffer.size() >= self.model.batch_size
+            and self.num_timesteps % self.log_freq == 0
+        ):
+            replay_data = self.model.replay_buffer.sample(
+                self.model.batch_size, env=self.model._vec_normalize_env
             )
-            q_value_1, _ = th.min(q_value_1, dim=1, keepdim=False)
-            q_value_2 = th.cat(
-                self.model.critic_target(replay_data.observations, replay_data.actions),
-                dim=1,
-            )
-            q_value_2, _ = th.min(q_value_2, dim=1, keepdim=False)
+            obs = replay_data.next_observations
+            with th.no_grad():
+                q_value_1 = th.cat(
+                    self.model.critic_target(obs, self.model.actor(obs)), dim=1
+                )
+                q_value_1, _ = th.min(q_value_1, dim=1, keepdim=False)
+                q_value_2 = th.cat(
+                    self.model.critic_target(
+                        replay_data.observations, replay_data.actions
+                    ),
+                    dim=1,
+                )
+                q_value_2, _ = th.min(q_value_2, dim=1, keepdim=False)
 
-        self.logger.record("train/q1_value", q_value_1.mean().item())
-        self.logger.record("train/q2_value", q_value_2.mean().item())
-        self.logger.record("train/q1_std", q_value_1.std().item())
-        self.logger.record("train/q2_std", q_value_2.std().item())
+            self.logger.record("train/q1_value", q_value_1.mean().item())
+            self.logger.record("train/q2_value", q_value_2.mean().item())
+            self.logger.record("train/q1_std", q_value_1.std().item())
+            self.logger.record("train/q2_std", q_value_2.std().item())
         for key, values in self.reward_buffers.items():
             if values:
                 self.logger.record(f"reward_terms/{key}", float(np.mean(values)))
@@ -115,6 +120,8 @@ class SaveBestModelCallback(BaseCallback):
             mean_reward = safe_mean(
                 [ep_info["r"] for ep_info in self.model.ep_info_buffer]
             )
+            if not np.isfinite(mean_reward):
+                return True
             if mean_reward > self.best_reward:
                 self.best_reward = mean_reward
                 model_name = f"{self.model_name}_best0"

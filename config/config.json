@@ -8,9 +8,9 @@
         "min_a": -5,
         "max_path_s": 20,
         "speed_limit_samples": 40,
-        "valid_max_st_num": 0,
-        "max_single_speed_limit_points": 0,
-        "max_speed_limit_intervals": 1,
+        "valid_max_st_num": 4,
+        "max_single_speed_limit_points": 2,
+        "max_speed_limit_intervals": 2,
         "max_t": 5,
         "max_abs_slope": 20,
         "max_min_s": 10,
@@ -23,6 +23,7 @@
             "acc_weight": 0.08,
             "jerk_weight": 0.03,
             "djerk_weight": 0.01,
+            "acc_limit_weight": 0.5,
             "hard_margin_weight": 1.5,
             "soft_margin_weight": 0.6,
             "yield_weight": 0.5,
@@ -41,6 +42,11 @@
             "acc_comfort": 2.0,
             "jerk_comfort": 4.0,
             "djerk_comfort": 20.0,
+            "speed_tracking_tolerance": 0.15,
+            "acc_deadband": 0.15,
+            "jerk_deadband": 0.25,
+            "djerk_deadband": 1.0,
+            "interaction_speed_discount": 0.5,
             "terminal_speed_weight": 0.1,
             "terminal_acc_weight": 0.05
         }
@@ -56,8 +62,8 @@
             "batch_size": 256,
             "buffer_size": 300000,
             "learning_starts": 5000,
-            "gradient_steps": 1,
-            "train_freq": 1,
+            "gradient_steps": 4,
+            "train_freq": 4,
             "target_entropy": "auto",
             "tensorboard_log": ".tensorboard",
             "policy_kwargs": {
@@ -91,10 +97,63 @@
         "use_multi_env": false,
         "n_envs": 1
     },
+    "curriculum_config": {
+        "enabled": true,
+        "stages": [
+            {
+                "name": "speed",
+                "config_overrides": {
+                    "dp_vt_config": {
+                        "valid_max_st_num": 0,
+                        "max_single_speed_limit_points": 1,
+                        "max_speed_limit_intervals": 1
+                    },
+                    "model_config": {
+                        "train_param": {
+                            "total_timesteps": 200000
+                        }
+                    }
+                }
+            },
+            {
+                "name": "soft-st",
+                "config_overrides": {
+                    "dp_vt_config": {
+                        "valid_max_st_num": 2,
+                        "max_single_speed_limit_points": 1,
+                        "max_speed_limit_intervals": 2
+                    },
+                    "model_config": {
+                        "train_param": {
+                            "total_timesteps": 300000
+                        }
+                    }
+                }
+            },
+            {
+                "name": "full",
+                "config_overrides": {
+                    "dp_vt_config": {
+                        "valid_max_st_num": 4,
+                        "max_single_speed_limit_points": 2,
+                        "max_speed_limit_intervals": 2
+                    },
+                    "model_config": {
+                        "train_param": {
+                            "total_timesteps": 500000
+                        }
+                    }
+                }
+            }
+        ]
+    },
     "eval_config": {
-        "eval_freq": 20000,
-        "n_eval_episodes": 5,
+        "eval_freq": 50000,
+        "n_eval_episodes": 3,
         "deterministic": true,
         "verbose": 1
+    },
+    "custom_log_config": {
+        "log_freq": 10000
     }
 }

@@ -1,7 +1,7 @@
 import os
 import sys
 from copy import deepcopy
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,19 +35,38 @@ def train(
     show_plot: bool = False,
 ) -> None:
     del use_multi_env, n_envs
-    train_env = _build_env(init_state, config["dp_vt_config"], render=show_plot)
-    eval_env = _build_env(init_state, config["dp_vt_config"], render=False)
     if th.cuda.is_available():
         th.cuda.set_device(device_id)
-    model = SAC(env=train_env, **_build_sac_kwargs(config, device_id))
-    learn_params = deepcopy(config["model_config"]["train_param"])
-    callbacks = [SaveBestModelCallback(mode_name)]
-    if use_custom_log:
-        callbacks.append(SACTensorboardCallBack())
-    callbacks.append(EvalCallback(eval_env, **_get_eval_config(config)))
-    learn_params["callback"] = CallbackList(callbacks)
-    model.learn(**learn_params)
+    stages = _get_training_stages(config)
+    model: SAC | None = None
+    active_train_env: Monitor | None = None
+    for idx, stage in enumerate(stages):
+        stage_name = stage["name"]
+        stage_config = stage["config"]
+        train_env = _build_env(init_state, stage_config["dp_vt_config"], render=show_plot and idx == len(stages) - 1)
+        eval_env = _build_env(init_state, stage_config["dp_vt_config"], render=False)
+        if model is None:
+            model = SAC(env=train_env, **_build_sac_kwargs(stage_config, device_id))
+        else:
+            if active_train_env is not None:
+                active_train_env.close()
+            model.set_env(train_env)
+            _apply_runtime_sac_config(model, stage_config)
+        active_train_env = train_env
+        learn_params = deepcopy(stage_config["model_config"]["train_param"])
+        learn_params.setdefault("reset_num_timesteps", idx == 0)
+        callbacks = [SaveBestModelCallback(f"{mode_name}_{stage_name}")]
+        if use_custom_log:
+            callbacks.append(SACTensorboardCallBack(**_get_log_config(stage_config)))
+        callbacks.append(EvalCallback(eval_env, **_get_eval_config(stage_config)))
+        learn_params["callback"] = CallbackList(callbacks)
+        model.learn(**learn_params)
+        model.save(f"{mode_name}_{stage_name}")
+        eval_env.close()
+    assert model is not None
     model.save(mode_name)
+    if active_train_env is not None and not show_plot:
+        active_train_env.close()
     if show_plot:
         plt.show()
 
@@ -64,19 +83,37 @@ def train_from_local_model(
     del use_multi_env
     if th.cuda.is_available():
         th.cuda.set_device(device_id)
-    train_env = _build_env(init_state, config["dp_vt_config"], render=False)
-    eval_env = _build_env(init_state, config["dp_vt_config"], render=False)
-    model = SAC.load(model_name, env=train_env, device=_resolve_device(device_id))
-    _apply_runtime_sac_config(model, config)
+    stages = _get_training_stages(config)
+    model: SAC | None = None
+    active_train_env: Monitor | None = None
+    for idx, stage in enumerate(stages):
+        stage_name = stage["name"]
+        stage_config = stage["config"]
+        train_env = _build_env(init_state, stage_config["dp_vt_config"], render=False)
+        eval_env = _build_env(init_state, stage_config["dp_vt_config"], render=False)
+        if model is None:
+            model = SAC.load(model_name, env=train_env, device=_resolve_device(device_id))
+        else:
+            if active_train_env is not None:
+                active_train_env.close()
+            model.set_env(train_env)
+        active_train_env = train_env
+        _apply_runtime_sac_config(model, stage_config)
 
-    learn_params = deepcopy(config["model_config"]["train_param"])
-    callbacks = [SaveBestModelCallback(model_out)]
-    if use_custom_log:
-        callbacks.append(SACTensorboardCallBack())
-    callbacks.append(EvalCallback(eval_env, **_get_eval_config(config)))
-    learn_params["callback"] = CallbackList(callbacks)
-    model.learn(**learn_params)
+        learn_params = deepcopy(stage_config["model_config"]["train_param"])
+        learn_params["reset_num_timesteps"] = False
+        callbacks = [SaveBestModelCallback(f"{model_out}_{stage_name}")]
+        if use_custom_log:
+            callbacks.append(SACTensorboardCallBack(**_get_log_config(stage_config)))
+        callbacks.append(EvalCallback(eval_env, **_get_eval_config(stage_config)))
+        learn_params["callback"] = CallbackList(callbacks)
+        model.learn(**learn_params)
+        model.save(f"{model_out}_{stage_name}")
+        eval_env.close()
+    assert model is not None
     model.save(model_out)
+    if active_train_env is not None:
+        active_train_env.close()
 
 
 def _build_env(
@@ -89,6 +126,20 @@ def _build_env(
     env_kwargs["render_mode"] = "human" if render else None
     env_kwargs["init_dynamic_state"] = init_state
     return Monitor(DPVTEnv(**env_kwargs))
+
+
+def _get_training_stages(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    curriculum = config.get("curriculum_config", {})
+    if not curriculum.get("enabled"):
+        return [{"name": "full", "config": deepcopy(config)}]
+
+    stages: List[Dict[str, Any]] = []
+    for idx, stage in enumerate(curriculum.get("stages", [])):
+        stage_config = deepcopy(config)
+        _deep_update(stage_config, stage.get("config_overrides", {}))
+        stage_name = stage.get("name", f"stage_{idx + 1}")
+        stages.append({"name": stage_name, "config": stage_config})
+    return stages or [{"name": "full", "config": deepcopy(config)}]
 
 
 def _build_sac_kwargs(config: Dict[str, Any], device_id: int) -> Dict[str, Any]:
@@ -152,3 +203,20 @@ def _get_eval_config(config: Dict[str, Any]) -> Dict[str, Any]:
             },
         )
     )
+
+
+def _get_log_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    return deepcopy(config.get("custom_log_config", {}))
+
+
+def _deep_update(target: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in overrides.items():
+        if (
+            key in target
+            and isinstance(target[key], dict)
+            and isinstance(value, dict)
+        ):
+            _deep_update(target[key], value)
+        else:
+            target[key] = value
+    return target
