@@ -8,14 +8,13 @@ class MixedFeaturesExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: spaces.Dict, features_dim: int = 256):
         super().__init__(observation_space, features_dim)
         self.image_net = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(1, 16, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((6, 4)),
             nn.Flatten(),
         )
         dummy_image = th.zeros(1, *observation_space["st_image"].shape)
@@ -26,7 +25,10 @@ class MixedFeaturesExtractor(BaseFeaturesExtractor):
             nn.Linear(64, 64),
             nn.Tanh(),
         )
-        self.fc = nn.Linear(cnn_output_dim + 64, features_dim)
+        self.fc = nn.Sequential(
+            nn.Linear(cnn_output_dim + 64, features_dim),
+            nn.ReLU(),
+        )
 
     def forward(self, observations: dict) -> th.Tensor:
         image_features = self.image_net(observations["st_image"])

@@ -1,8 +1,9 @@
 from functools import partial
-from typing import Callable
+from typing import Callable, Dict, List
 import numpy as np
 import torch as th
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.utils import safe_mean
 
 
@@ -47,49 +48,58 @@ def register_schedule(schedule: str, **kwargs) -> Callable[[float], float]:
     return partial(constant, kwargs["initial_lr"])
 
 
-class MultiEnvEpisodeEndTrainingCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super(MultiEnvEpisodeEndTrainingCallback, self).__init__(verbose)
-        self.episode_end = False
-
-    def _on_step(self) -> bool:
-        if any(self.locals.get("dones")):
-            self.episode_end = True
-        return True
-
-    def _on_rollout_end(self) -> None:
-        if self.episode_end:
-            self.model.train(gradient_steps=-1)
-            self.episode_end = False
-
-
 class SACTensorboardCallBack(BaseCallback):
-    def __init__(self, verbose=0):
+    def __init__(self, log_freq: int = 5000, verbose: int = 0):
         super().__init__(verbose)
+        self.log_freq = max(int(log_freq), 1)
+        self.reward_buffers: Dict[str, List[float]] = {}
+        self.event_buffers: Dict[str, List[float]] = {}
 
     def _on_step(self) -> bool:
+        infos = self.locals.get("infos") or []
+        for info in infos:
+            reward_terms = info.get("reward_terms", {})
+            for key, value in reward_terms.items():
+                self.reward_buffers.setdefault(key, []).append(float(value))
+            events = info.get("events", {})
+            for key, value in events.items():
+                self.event_buffers.setdefault(key, []).append(float(value))
         return True
 
     def _on_rollout_end(self) -> None:
-        replay_data = self.model.replay_buffer.sample(
-            self.model.batch_size, env=self.model._vec_normalize_env
-        )
-        obs = replay_data.next_observations
-        with th.no_grad():
-            q_value_1 = th.cat(
-                self.model.critic_target(obs, self.model.actor(obs)), dim=1
+        if (
+            self.model.replay_buffer.size() >= self.model.batch_size
+            and self.num_timesteps % self.log_freq == 0
+        ):
+            replay_data = self.model.replay_buffer.sample(
+                self.model.batch_size, env=self.model._vec_normalize_env
             )
-            q_value_1, _ = th.min(q_value_1, dim=1, keepdim=False)
-            q_value_2 = th.cat(
-                self.model.critic_target(replay_data.observations, replay_data.actions),
-                dim=1,
-            )
-            q_value_2, _ = th.min(q_value_2, dim=1, keepdim=False)
+            obs = replay_data.next_observations
+            with th.no_grad():
+                q_value_1 = th.cat(
+                    self.model.critic_target(obs, self.model.actor(obs)), dim=1
+                )
+                q_value_1, _ = th.min(q_value_1, dim=1, keepdim=False)
+                q_value_2 = th.cat(
+                    self.model.critic_target(
+                        replay_data.observations, replay_data.actions
+                    ),
+                    dim=1,
+                )
+                q_value_2, _ = th.min(q_value_2, dim=1, keepdim=False)
 
-        self.logger.record("train/q1_value", q_value_1.mean().item())
-        self.logger.record("train/q2_value", q_value_2.mean().item())
-        self.logger.record("train/q1_std", q_value_1.std().item())
-        self.logger.record("train/q2_std", q_value_2.std().item())
+            self.logger.record("train/q1_value", q_value_1.mean().item())
+            self.logger.record("train/q2_value", q_value_2.mean().item())
+            self.logger.record("train/q1_std", q_value_1.std().item())
+            self.logger.record("train/q2_std", q_value_2.std().item())
+        for key, values in self.reward_buffers.items():
+            if values:
+                self.logger.record(f"reward_terms/{key}", float(np.mean(values)))
+        for key, values in self.event_buffers.items():
+            if values:
+                self.logger.record(f"events/{key}", float(np.mean(values)))
+        self.reward_buffers.clear()
+        self.event_buffers.clear()
 
         # figure, ax = plt.subplots(1, 2)
         # ax[0].hist(q_value_1.cpu().numpy())
@@ -110,6 +120,8 @@ class SaveBestModelCallback(BaseCallback):
             mean_reward = safe_mean(
                 [ep_info["r"] for ep_info in self.model.ep_info_buffer]
             )
+            if not np.isfinite(mean_reward):
+                return True
             if mean_reward > self.best_reward:
                 self.best_reward = mean_reward
                 model_name = f"{self.model_name}_best0"
@@ -118,4 +130,41 @@ class SaveBestModelCallback(BaseCallback):
                     print(
                         f"[CheckPoint]: Best Model has been saved at {self.num_timesteps} step with reward {self.best_reward}."
                     )
+        return True
+
+
+class EvalCallback(BaseCallback):
+    def __init__(
+        self,
+        eval_env,
+        eval_freq: int = 20000,
+        n_eval_episodes: int = 5,
+        deterministic: bool = True,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.deterministic = deterministic
+        self.best_mean_reward = -float("inf")
+
+    def _on_step(self) -> bool:
+        if self.eval_freq <= 0 or self.num_timesteps % self.eval_freq != 0:
+            return True
+
+        mean_reward, std_reward = evaluate_policy(
+            self.model,
+            self.eval_env,
+            n_eval_episodes=self.n_eval_episodes,
+            deterministic=self.deterministic,
+        )
+        self.logger.record("eval/mean_reward", float(mean_reward))
+        self.logger.record("eval/std_reward", float(std_reward))
+        self.best_mean_reward = max(self.best_mean_reward, float(mean_reward))
+        self.logger.record("eval/best_mean_reward", self.best_mean_reward)
+        if self.verbose > 0:
+            print(
+                f"[Eval] step={self.num_timesteps}, mean_reward={mean_reward:.4f}, std={std_reward:.4f}"
+            )
         return True
