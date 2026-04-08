@@ -5,10 +5,8 @@ import numpy as np
 class SpeedLimit:
     def __init__(self, speed_limit: np.ndarray = np.array([[]])):
         speed_limit = speed_limit.reshape((-1, 2))
-        if (
-            len(speed_limit.shape) != 2
-            and speed_limit.shape[1] != 2
-            and speed_limit.shape[1] != 0
+        if len(speed_limit.shape) != 2 or (
+            speed_limit.shape[1] != 2 and speed_limit.shape[1] != 0
         ):
             raise IndexError("invalid speed limit shapes: " + str(speed_limit.shape))
         self.speed_limit_points: np.ndarray = speed_limit
@@ -27,7 +25,9 @@ class SpeedLimit:
 
     def get_speed_limits_by_s(self, s: float) -> float:
         if self.speed_limit_points.shape[0] < 2:
-            return 20.0
+            if self.speed_limit_points.shape[0] == 1:
+                return float(self.speed_limit_points[0, 1])
+            return 0.0
 
         idx = bisect.bisect_left(self.speed_limit_points, s, key=lambda x: x[0])
 

@@ -188,17 +188,13 @@ class DPVTEnv(gym.Env):
             if self.speed_limit.speed_limit_points.size > 0
             else self.max_v
         )
-        init_v = min(
-            self.max_v,
-            np.random.uniform(0.0, speed_limit_max) + np.random.uniform(0.0, 0.5),
-        )
-        acc_sign = np.random.binomial(1, 1 - self.max_a / max(-self.min_a, 1e-3))
-        if not acc_sign:
-            init_a = np.random.uniform(max(self.min_a, -init_v / max(self.dt * 10, 1e-3)), 0.0)
-        else:
-            init_a = np.random.uniform(0.0, self.max_a)
-
-        self.init_dynamic_state = np.array([0.0, init_v, init_a], dtype=np.float32)
+        default_state = np.asarray(self.init_dynamic_state, dtype=np.float32).copy()
+        if default_state.shape[0] != 3:
+            raise ValueError(f"invalid initial state shape: {default_state.shape}")
+        init_s = float(np.clip(default_state[0], 0.0, self.max_s))
+        init_v = float(np.clip(default_state[1], 0.0, min(self.max_v, speed_limit_max + 0.5)))
+        init_a = float(np.clip(default_state[2], self.min_a, self.max_a))
+        self.init_dynamic_state = np.array([init_s, init_v, init_a], dtype=np.float32)
         array = np.concatenate(
             (
                 self.init_dynamic_state,
@@ -211,7 +207,7 @@ class DPVTEnv(gym.Env):
                 f"inequal array dim: array_dim = {self.array_dim}, array_shape = {array.shape[0]}"
             )
 
-        self.s = [0.0]
+        self.s = [float(init_s)]
         self.v = [float(init_v)]
         self.a = [float(init_a)]
         self.j = []
@@ -313,8 +309,8 @@ class DPVTEnv(gym.Env):
         progress_reward = self.reward_config["progress_weight"] * np.clip(
             (s - s_prev) / max(self.max_v * self.dt, 1e-3), -1.0, 1.5
         )
-        speed_cost = self._speed_cost(s, v)
         st_cost = self._st_cost(s, v, t)
+        speed_cost = self._speed_cost(s, v)
         acc_cost = self._acc_cost(a)
         jerk_cost = self._jerk_cost(j)
         djerk_cost = self._d_jerk_cost()
@@ -399,7 +395,7 @@ class DPVTEnv(gym.Env):
             return 0.5 * margin_weight * max(0.0, safe_back - gap) ** 2
 
         penetration = min(s - s_lower, s_upper - s)
-        self.cross_hard_st = penetration > self.reward_config["hard_penetration_tolerance"]
+        self.cross_hard_st = True
         return margin_weight * (1.0 + penetration) ** 2
 
     def get_yield_distance(self, st: STBoundary, v: float, t: float) -> float:

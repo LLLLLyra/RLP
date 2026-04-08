@@ -50,7 +50,6 @@ def main():
 
     model_out = args.output_model
     train_config = config["train_config"]
-    train_config["use_multi_env"] = train_config["n_envs"] > 1
     if to_train:
         model_in = args.input_model
         train_from_local_model(
@@ -59,7 +58,7 @@ def main():
             config,
             init_state,
             device_id,
-            train_config["use_multi_env"],
+            train_config.get("use_multi_env", False),
             use_custom_log,
         )
     else:

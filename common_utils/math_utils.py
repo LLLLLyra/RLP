@@ -46,7 +46,7 @@ class LineSegment2d:
         return (self.end - self.start).length()
 
     def unit_direction(self) -> Vec2d:
-        return (self.end - self.start).normalize()
+        return (self.end - self.start).normalise()
 
     def project_onto_unit(self, point: Vec2d) -> float:
         direction = self.unit_direction()
@@ -89,10 +89,10 @@ class LineSegment2d:
 
         if self._ccw(A, B, C) == 0 and self._ccw(A, B, D) == 0:
             if (
-                min(A.x, B.x) <= max(C.x, D.x)
-                and max(A.x, B.x) >= min(C.x, D.x)
-                and min(A.y, B.y) <= max(C.y, D.y)
-                and max(A.y, B.y) >= min(C.y, D.y)
+                min(A.x(), B.x()) <= max(C.x(), D.x())
+                and max(A.x(), B.x()) >= min(C.x(), D.x())
+                and min(A.y(), B.y()) <= max(C.y(), D.y())
+                and max(A.y(), B.y()) >= min(C.y(), D.y())
             ):
                 return True
             return False

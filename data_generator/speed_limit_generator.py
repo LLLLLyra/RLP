@@ -34,8 +34,8 @@ class SpeedLimitGenerator:
         """
         l = np.random.uniform(0, max_path_length)
         idx = bisect.bisect_right(speed_limit, l, key=lambda x: x[0])
-        idx = np.clip(0, len(speed_limit) - 1, idx)
-        return idx
+        idx = np.clip(idx, 0, len(speed_limit) - 1)
+        return int(idx)
 
     def sample_path_length(self, speed_limit: SpeedLimit) -> Optional[SpeedLimit]:
         """sample total path length
@@ -47,7 +47,7 @@ class SpeedLimitGenerator:
             Optional[SpeedLimit]: speed limit corresponding to the sampled s
         """
         idx = self.sample_path_s(speed_limit, self.max_path_length)
-        idx = np.clip(0, len(speed_limit) - 1, idx)
+        idx = np.clip(idx, 0, len(speed_limit) - 1)
 
         return SpeedLimit(speed_limit[: idx + 1])
 
@@ -82,8 +82,8 @@ class SpeedLimitGenerator:
         l, h = interval.min(), interval.max()
         idx_l = bisect.bisect_right(speed_limit, l, key=lambda x: x[0])
         idx_h = bisect.bisect_right(speed_limit, h, key=lambda x: x[0])
-        idx_l = np.clip(0, len(speed_limit) - 1, idx_l)
-        idx_h = np.clip(0, len(speed_limit) - 1, idx_h)
+        idx_l = int(np.clip(idx_l, 0, len(speed_limit) - 1))
+        idx_h = int(np.clip(idx_h, 0, len(speed_limit) - 1))
         return idx_l, idx_h
 
     def sample_speed_limit_interval(
