@@ -64,72 +64,344 @@ The current reward is **dense and continuous**, designed to avoid Q-value / rewa
 
 ### Reward structure
 
-At each step:
+At each step, the implementation in `env/dp_vt_env.py` computes:
 
-```text
-reward =
-    progress_reward
-  - st_cost
-  - speed_cost
-  - acc_cost
-  - jerk_cost
-  - djerk_cost
-  - terminal_penalty
-  + completion_bonus
-```
+\[
+r_t
+= r_{\text{progress}}
+- c_{\text{st}}
+- c_{\text{speed}}
+- c_{\text{acc}}
+- c_{\text{jerk}}
+- c_{\text{djerk}}
+- c_{\text{terminal}}
++ r_{\text{completion}}
+\]
+
+with
+
+\[
+\Delta s_t = s_t - s_{t-1}
+\]
+
+\[
+r_{\text{progress}}
+= w_p \cdot
+\mathrm{clip}\!\left(
+\frac{\Delta s_t}{v_{\max}\,dt},
+-1.0,\,
+1.5
+\right)
+\cdot \alpha_{\text{progress}}
+\]
+
+where `progress_scale` in the code is exactly \(\alpha_{\text{progress}}\).
 
 ### Components
 
 #### 2.1 Progress reward
 
-Encourages the ego vehicle to move forward:
+The forward-progress term is proportional to normalized station increment:
 
-- positive reward proportional to `delta_s`
-- automatically discounted during risky ST interactions to reduce "rush into obstacle" behavior
+\[
+r_{\text{progress}}
+= w_p \cdot
+\mathrm{clip}\!\left(
+\frac{s_t - s_{t-1}}{v_{\max}\,dt},
+-1.0,\,
+1.5
+\right)
+\cdot \alpha_{\text{progress}}
+\]
+
+The scale \(\alpha_{\text{progress}}\) starts from \(1.0\) and is reduced in ST interaction cases:
+
+- hard-ST risk: `hard_progress_discount`
+- soft-ST interaction with likely overtaking: `interaction_progress_discount`
+- soft-ST interaction with likely yielding: `yield_progress_discount`
+
+This is how the code reduces the incentive to "keep pushing forward" when the safer behavior is to slow down or yield.
 
 #### 2.2 Speed reward
 
-Encourages:
+The active reference speed is:
 
-- tracking the active speed reference
-- respecting speed limits
+\[
+v_{\text{ref}} = \min(v_{\text{limit}}(s_t),\, v_{\text{cruise}})
+\]
 
-The implementation uses:
+The code uses a deadband operator:
 
-- quadratic tracking error
-- explicit overspeed penalty
-- a small deadband around the reference speed
-- reduced tracking pressure while interacting with ST obstacles
+\[
+\phi(x;\delta)=
+\operatorname{sign}(x)\,\max(|x|-\delta,\,0)
+\]
+
+Then the speed cost is:
+
+\[
+c_{\text{speed}}
+=
+w_v
+\left(
+\frac{\phi(v_t - v_{\text{ref}};\,\delta_v)}{v_{\max}}
+\right)^2
+\cdot \alpha_{\text{speed}}
++
+w_{\text{over}}
+\max(0,\,
+v_t - v_{\text{limit}}(s_t) - \delta_{\text{over}}
+)^2
+\]
+
+where:
+
+- \(\delta_v\) = `speed_tracking_tolerance`
+- \(\delta_{\text{over}}\) = `overspeed_tolerance`
+- \(\alpha_{\text{speed}} = \)`interaction_speed_discount` when inside any ST interaction region, otherwise \(1.0\)
+
+This matches `_speed_cost(...)` exactly.
 
 #### 2.3 Comfort reward
 
-Penalizes:
+The comfort terms all use deadbands and quadratic penalties.
 
-- acceleration magnitude
-- jerk magnitude
-- jerk rate change
+Acceleration:
 
-All comfort terms are quadratic and include deadbands to avoid punishing harmless small motions.
+\[
+c_{\text{acc}}
+=
+w_a
+\left(
+\frac{\phi(a_t;\,\delta_a)}{a_{\text{comfort}}}
+\right)^2
++
+w_{a,\text{limit}}
+\left(
+\max(0, a_t-a_{\max})
++
+\max(0, a_{\min}-a_t)
+\right)^2
+\]
+
+Jerk:
+
+\[
+c_{\text{jerk}}
+=
+w_j
+\left(
+\frac{\phi(j_t;\,\delta_j)}{j_{\text{comfort}}}
+\right)^2
+\]
+
+Jerk-rate:
+
+\[
+\dot{j}_t = \frac{j_t - j_{t-1}}{dt}
+\]
+
+\[
+c_{\text{djerk}}
+=
+w_{\dot{j}}
+\left(
+\frac{\phi(\dot{j}_t;\,\delta_{\dot{j}})}{\dot{j}_{\text{comfort}}}
+\right)^2
+\]
+
+where the corresponding code parameters are:
+
+- `acc_deadband`, `acc_comfort`, `acc_limit_weight`
+- `jerk_deadband`, `jerk_comfort`
+- `djerk_deadband`, `djerk_comfort`
 
 #### 2.4 ST interaction reward
 
-Hard and soft ST obstacles are handled differently:
+For each active ST polygon at time \(t\), the environment gets the current longitudinal interval:
 
-- **hard ST**
-  - penalize unsafe approach margin
-  - discount progress reward when the agent keeps pushing toward the occupied region
-  - entering the hard obstacle triggers early truncation
+\[
+[s_{\text{lower}}(t),\, s_{\text{upper}}(t)]
+\]
 
-- **soft ST**
-  - penalize unsafe following / yielding margin
-  - estimate whether overtaking is still feasible within the remaining horizon
-  - if overtaking looks feasible, being closer to the front edge is penalized less
-  - if yielding is preferred, being closer to the rear edge is penalized less
-  - being inside a soft region is costly but not necessarily terminal
+and computes a forward safe gap:
+
+\[
+d_{\text{safe}}
+= d_0 + \tau_v \max(v_t, 0)
++ 0.1 \max(\dot{s}_{\text{lower}}(t), 0)
+\]
+
+matching `get_yield_distance(...)`.
+
+##### Hard ST
+
+If the ego is before the obstacle:
+
+\[
+g_{\text{front}} = s_{\text{lower}} - s_t
+\]
+
+\[
+c_{\text{hard}}
+=
+w_{\text{hard}}
+\max(0,\,
+d_{\text{safe}} - g_{\text{front}}
+)^2
+\]
+
+If the ego is already after the obstacle:
+
+\[
+g_{\text{back}} = s_t - s_{\text{upper}}
+\]
+
+\[
+c_{\text{hard}}
+=
+0.5\,w_{\text{hard}}
+\max(0,\,
+d_{\text{back}} - g_{\text{back}}
+)^2
+\]
+
+If the ego is inside the hard ST interval, the code marks `cross_hard_st = True` and uses:
+
+\[
+\rho = \frac{s_t - s_{\text{lower}}}{s_{\text{upper}} - s_{\text{lower}} + \epsilon}
+\]
+
+\[
+c_{\text{hard}}
+=
+w_{\text{hard}}
+\left(
+1 + \left[1 - |2\rho - 1|\right]
+\right)^2
+\]
+
+This means:
+
+- approaching a hard ST too aggressively is penalized,
+- staying near the center of a hard forbidden band is more costly,
+- entering hard ST triggers an early terminal event.
+
+##### Soft ST
+
+The environment first checks whether overtaking still looks dynamically feasible:
+
+\[
+s_{\text{reachable}}
+=
+s_t + \max(v_t,0)\,T_{\text{rem}}
++ \frac{1}{2}\max(a_{\max},0)\,T_{\text{rem}}^2
+\]
+
+\[
+\text{can\_overtake}
+\iff
+s_{\text{reachable}}
+\ge
+s_{\text{upper}} + d_{\text{back}}
+\]
+
+where \(T_{\text{rem}} = \max(T - t, 0)\).
+
+If the ego is before the soft obstacle:
+
+\[
+g_{\text{front}} = s_{\text{lower}} - s_t
+\]
+
+\[
+c_{\text{soft}}
+=
+w_{\text{front}}
+\max(0,\,
+d_{\text{safe}} - g_{\text{front}}
+)^2
+\]
+
+with
+
+- \(w_{\text{front}} = w_{\text{soft-margin}}\) if overtaking is feasible
+- \(w_{\text{front}} = w_{\text{yield}}\) otherwise
+
+If the ego is after the soft obstacle:
+
+\[
+c_{\text{soft}}
+=
+0.5\,w_{\text{soft-margin}}
+\max(0,\,
+d_{\text{back}} - (s_t - s_{\text{upper}})
+)^2
+\]
+
+If the ego is inside the soft ST interval, the code defines:
+
+\[
+\rho = \frac{s_t - s_{\text{lower}}}{s_{\text{upper}} - s_{\text{lower}} + \epsilon}
+\]
+
+\[
+c_{\text{center}} =
+w_{\text{soft-margin}}
+\left(
+1 - |2\rho - 1|
+\right)^2
+\]
+
+and an edge-preference occupancy term:
+
+\[
+d_{\text{edge}} =
+\begin{cases}
+s_{\text{upper}} - s_t, & \text{if overtaking is feasible} \\
+s_t - s_{\text{lower}}, & \text{otherwise}
+\end{cases}
+\]
+
+\[
+\rho_{\text{occ}} =
+\frac{d_{\text{edge}}}{s_{\text{upper}} - s_{\text{lower}} + \epsilon}
+\]
+
+\[
+c_{\text{occ}}
+=
+w_{\text{occ}}
+\rho_{\text{occ}}^2
+\]
+
+where `soft_overtake_discount` is applied to \(w_{\text{occ}}\) in the overtaking-feasible case.
+
+The total in-band soft cost is:
+
+\[
+c_{\text{soft}} = c_{\text{center}} + c_{\text{occ}}
+\]
+
+This is the key difference from a plain occupancy penalty: the reward now softly prefers the "correct side" of the soft interaction region depending on whether yielding or overtaking is more plausible.
 
 #### 2.5 Terminal events
 
-The episode is truncated early on:
+The terminal penalty is:
+
+\[
+c_{\text{terminal}}
+=
+\mathbb{1}_{\text{hard-ST}}\,P_{\text{collision}}
++
+\mathbb{1}_{\text{severe-overspeed}}\,P_{\text{over}}
++
+\mathbb{1}_{\text{reverse}}\,P_{\text{reverse}}
++
+\mathbb{1}_{\text{out-of-bounds}}\,P_{\text{oob}}
+\]
+
+The episode is truncated early if any of the following is true:
 
 - hard obstacle penetration
 - severe overspeed
@@ -137,6 +409,24 @@ The episode is truncated early on:
 - numerical / state out-of-bounds
 
 This replaces the previous "keep punishing for the rest of the episode" design.
+
+#### 2.6 Completion bonus
+
+At the terminal horizon \(t=T\), if the episode did not end early, the code adds:
+
+\[
+r_{\text{completion}}
+=
+b_{\text{completion}}
+-
+\left(
+w_{Tv}(v_T - v_{\text{ref},T})^2
++
+w_{Ta}a_T^2
+\right)
+\]
+
+where \(v_{\text{ref},T} = \min(v_{\text{limit}}(s_T), v_{\text{cruise}})\).
 
 ### Reward diagnostics
 
